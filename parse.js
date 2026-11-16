@@ -1,50 +1,42 @@
 // marked-fast: a fast, dependency-free CommonMark + GFM renderer.
-// Written from scratch to match the HTML marked 18.1.3 produces with its
-// default options (gfm on, breaks off, pedantic off). Where marked departs
-// from the CommonMark/GFM specs, marked's output wins.
+//
+// Written to match the HTML marked 18.1.3 produces with its default
+// options (gfm on, breaks off, pedantic off). Where marked departs from
+// the CommonMark/GFM specs, marked's output wins. Fix round: the inline
+// emphasis matcher follows marked's emStrong scan (the y%3 rule and the
+// open/close capacity accounting), and a line inside a list-item fence
+// whose indent is below the item's content column ends the item.
 // SPDX-License-Identifier: MIT
 
-// ---------------------------------------------------------------- helpers
+// ---------------------------------------------------------------- scalars
 
-/** Escape &, <, >, ", ' for text and attribute values (marked's escape). */
+const ESC_TEST = /[&<>"']/;
+const ESC_NOENC_TEST = /[&<>"']/;
+
+/** Escape &, <, >, ", ' (marked's escape, encode on). */
 function esc(s) {
+  if (!ESC_TEST.test(s)) return s;
   let out = '';
   let last = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
-    let rep = null;
+    let rep = '';
     if (c === 38) rep = '&amp;';
     else if (c === 60) rep = '&lt;';
     else if (c === 62) rep = '&gt;';
     else if (c === 34) rep = '&quot;';
     else if (c === 39) rep = '&#39;';
-    if (rep !== null) {
-      if (i > last) out += s.slice(last, i);
-      out += rep;
-      last = i + 1;
-    }
+    else continue;
+    if (i > last) out += s.slice(last, i);
+    out += rep;
+    last = i + 1;
   }
   return last === 0 ? s : out + s.slice(last);
 }
 
-/** marked's href encoding: encodeURI (with %25 folded back to %, so
- * existing percent-escapes are not double-encoded), then attribute-escape
- * (entity-like & stays raw). */
-function encodeHref(dest) {
-  let u;
-  try {
-    u = encodeURI(dest).replace(/%25/g, '%');
-  } catch {
-    u = dest;
-  }
-  return escNoEncode(u);
-}
-
-/**
- * Is s[i] an '&' starting an entity-like reference (&word; / &#123; /
+/** Is s[i] an '&' starting an entity-like reference (&word; / &#123; /
  * &#x1f;)? Decimal is limited to 7 digits, hex to 6 — longer is not a
- * reference and the '&' gets escaped.
- */
+ * reference and the '&' gets escaped. */
 function isEntityRef(s, i) {
   const n = s.length;
   let j = i + 1;
@@ -71,17 +63,16 @@ function isEntityRef(s, i) {
   return j > start && j < n && s[j] === ';';
 }
 
-/**
- * Escape &, <, >, ", ' — but leave an '&' raw when it starts an
+/** Escape &, <, >, ", ' — but leave an '&' raw when it starts an
  * entity-like reference (marked's escape with encode=false). Used for
- * hrefs, titles and alts, where `&amp;` / `&#169;` must survive.
- */
+ * hrefs, titles and alts, where `&amp;` / `&#169;` must survive. */
 function escNoEncode(s) {
+  if (!ESC_NOENC_TEST.test(s)) return s;
   let out = '';
   let last = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
-    let rep = null;
+    let rep = '';
     if (c === 38) {
       if (isEntityRef(s, i)) continue;
       rep = '&amp;';
@@ -89,13 +80,25 @@ function escNoEncode(s) {
     else if (c === 62) rep = '&gt;';
     else if (c === 34) rep = '&quot;';
     else if (c === 39) rep = '&#39;';
-    if (rep !== null) {
-      if (i > last) out += s.slice(last, i);
-      out += rep;
-      last = i + 1;
-    }
+    else continue;
+    if (i > last) out += s.slice(last, i);
+    out += rep;
+    last = i + 1;
   }
   return last === 0 ? s : out + s.slice(last);
+}
+
+/** marked's href encoding: encodeURI (with %25 folded back to %, so
+ * existing percent-escapes are not double-encoded), then attribute-escape
+ * (entity-like & stays raw). */
+function encodeHref(dest) {
+  let u;
+  try {
+    u = encodeURI(dest).replace(/%25/g, '%');
+  } catch {
+    u = dest;
+  }
+  return escNoEncode(u);
 }
 
 function isSpace(ch) {
@@ -104,24 +107,26 @@ function isSpace(ch) {
 
 /** ASCII punctuation (CommonMark's definition). */
 function isAsciiPunct(ch) {
+  if (!ch) return false;
   const c = ch.charCodeAt(0);
-  return (
-    (c >= 33 && c <= 47) || (c >= 58 && c <= 64) || (c >= 91 && c <= 96) || (c >= 123 && c <= 126)
-  );
+  return (c >= 33 && c <= 47) || (c >= 58 && c <= 64) || (c >= 91 && c <= 96) || (c >= 123 && c <= 126);
 }
 
 const PUNCT_RE = /[\p{P}\p{S}]/u;
 /** Unicode punctuation or symbol (for emphasis flanking rules). */
 function isPunct(ch) {
+  if (!ch) return false;
   const c = ch.charCodeAt(0);
   if (c < 128) return isAsciiPunct(ch);
   return PUNCT_RE.test(ch);
 }
 
+const ALNUM_RE = /[\p{L}\p{N}]/u;
 function isAlnum(ch) {
+  if (!ch) return false;
   const c = ch.charCodeAt(0);
   if (c < 128) return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
-  return /[\p{L}\p{N}]/u.test(ch);
+  return ALNUM_RE.test(ch);
 }
 
 /** Is the string blank (only spaces/tabs)? */
@@ -133,10 +138,8 @@ function isBlank(line) {
   return true;
 }
 
-/**
- * Leading indentation of a line: [columns, charIndex]. A tab advances to the
- * next multiple of 4 columns.
- */
+/** Leading indentation of a line: [columns, charIndex]. A tab advances to
+ * the next multiple of 4 columns. */
 function lineIndent(line) {
   let col = 0;
   let i = 0;
@@ -149,11 +152,21 @@ function lineIndent(line) {
   return [col, i];
 }
 
-/**
- * Remove up to `n` columns of LEADING WHITESPACE only (fenced-code
- * dedent: a content line with less indent keeps its text). Otherwise the
- * same tab rules as stripCols.
- */
+/** marked's Dt dedent for fenced code: remove up to `n` leading-
+ * whitespace CHARACTERS from a line that starts with whitespace (a
+ * tab is one character here, not four columns). */
+function dtDedent(line, n) {
+  let i = 0;
+  while (i < line.length && (line[i] === ' ' || line[i] === '\t')) i++;
+  if (i === 0) return line;
+  return line.slice(Math.min(i, n));
+}
+
+/** Remove up to `n` columns of LEADING WHITESPACE only (fenced-code
+ * dedent: a content line with less indent keeps its text). A surviving
+ * leading tab is expanded to spaces when n is a multiple of 4 (the tab
+ * sits on a tab stop, so marked emits spaces); when n is not a multiple
+ * of 4 the tab is kept literal (marked preserves it in fenced code). */
 function stripIndentWs(line, n) {
   let col = 0;
   let i = 0;
@@ -172,19 +185,11 @@ function stripIndentWs(line, n) {
       col = next;
     } else break;
   }
-  // A surviving leading tab is expanded to spaces (its original width)
-  // when n is a multiple of 4: the tab sits on a tab stop, so after the
-  // strip it would keep its width as a tab, but marked emits spaces.
-  // When n is not a multiple of 4 the tab is kept literal (marked
-  // preserves it in fenced code).
   if (n % 4 === 0) {
     while (i < line.length) {
       const c = line.charCodeAt(i);
-      if (c === 32) {
-        out += ' ';
-        col++;
-        i++;
-      } else if (c === 9) {
+      if (c === 32) { out += ' '; col++; i++; }
+      else if (c === 9) {
         const next = (col | 3) + 1;
         out += ' '.repeat(next - col);
         col = next;
@@ -195,16 +200,20 @@ function stripIndentWs(line, n) {
   return out + line.slice(i);
 }
 
-/**
- * Remove `n` columns of leading indentation from a line. A tab straddling
- * the boundary is replaced by the spaces needed to reach it. Tabs are
- * expanded against the line's original columns: when `n` is not a multiple
- * of 4, a tab that survives the strip would land on a different tab stop,
- * so the remaining leading tabs are expanded to spaces (their original
- * widths); when `n` is a multiple of 4 the survivors keep their stops and
- * stay literal tabs (marked preserves them in code content).
- */
-function stripCols(line, n) {
+/** Remove `n` columns of leading indentation from a line. A tab
+ * straddling the boundary is replaced by the spaces needed to reach it.
+ * Tabs are expanded against the line's original columns: when `n` is not
+ * a multiple of 4, a tab that survives the strip would land on a
+ * different tab stop, so the remaining leading tabs are expanded to
+ * spaces (their original widths); when `n` is a multiple of 4 the
+ * survivors keep their stops and stay literal tabs (marked preserves
+ * them in code content). Note the rule is the OPPOSITE of stripIndentWs.
+ * `expandAll` (list-item lines only): marked's list tokenizer expands
+ * the line's leading whitespace (tabs to the next multiple of 4) BEFORE
+ * slicing the indent, so a tab that survives the strip always becomes
+ * spaces there — a fence content line `        \tindented` in an item
+ * with content column 8 renders `    indented`, not `\tindented`. */
+function stripCols(line, n, expandAll) {
   let col = 0;
   let i = 0;
   let out = '';
@@ -222,14 +231,11 @@ function stripCols(line, n) {
       col = next;
     } else col++;
   }
-  if (n % 4 !== 0) {
+  if (expandAll || n % 4 !== 0) {
     while (i < line.length) {
       const c = line.charCodeAt(i);
-      if (c === 32) {
-        out += ' ';
-        col++;
-        i++;
-      } else if (c === 9) {
+      if (c === 32) { out += ' '; col++; i++; }
+      else if (c === 9) {
         const next = (col | 3) + 1;
         out += ' '.repeat(next - col);
         col = next;
@@ -240,72 +246,29 @@ function stripCols(line, n) {
   return out + line.slice(i);
 }
 
-// ---------------------------------------------------------------- entities
+/** Unescape backslash escapes (\ + ASCII punct -> punct). Entities are
+ * NOT decoded. */
+function unescapeBackslash(s) {
+  if (s.indexOf('\\') === -1) return s;
+  let out = '';
+  let last = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && i + 1 < s.length && isAsciiPunct(s[i + 1])) {
+      if (i > last) out += s.slice(last, i);
+      out += s[i + 1];
+      i++;
+      last = i + 1;
+    }
+  }
+  return last === 0 ? s : out + s.slice(last);
+}
 
-const ENTITIES = {
-  AMP: '&', amp: '&', apos: "'", AElig: '\u00C6', aelig: '\u00E6', Aacute: '\u00C1',
-  aacute: '\u00E1', Acirc: '\u00C2', acirc: '\u00E2', acute: '\u00B4', Atilde: '\u00C3',
-  atilde: '\u00E3', Auml: '\u00C4', auml: '\u00E4', Aring: '\u00C5', aring: '\u00E5',
-  Agrave: '\u00C0', agrave: '\u00E0', Alpha: '\u0391', alpha: '\u03B1', and: '\u2227',
-  ang: '\u2220', Aring2: '\u00C5', asymp: '\u2248', Atilde2: '\u00C3', bdquo: '\u201E',
-  Beta: '\u0392', beta: '\u03B2', brvbar: '\u00A6', bull: '\u2022', cap: '\u2229',
-  Ccedil: '\u00C7', ccedil: '\u00E7', cedil: '\u00B8', cent: '\u00A2', Chi: '\u03A7',
-  chi: '\u03C7', circ: '\u02C6', ClockwiseContourIntegral: '\u2232', clubs: '\u2663',
-  cong: '\u2245', copy: '\u00A9', crarr: '\u21B5', cup: '\u222A', curren: '\u00A4',
-  Dagger: '\u2021', dagger: '\u2020', dArr: '\u21D3', Darr: '\u2193', darr: '\u2193',
-  Dcaron: '\u010E', dcaron: '\u010F', deg: '\u00B0', Delta: '\u0394', delta: '\u03B4',
-  diams: '\u2666', DifferentialD: '\u2146', divide: '\u00F7', Eacute: '\u00C9',
-  eacute: '\u00E9', Ecirc: '\u00CA', ecirc: '\u00EA', Egrave: '\u00C8', egrave: '\u00E8',
-  empty: '\u2205', emsp: '\u2003', ensp: '\u2002', Epsilon: '\u0395', epsilon: '\u03B5',
-  equiv: '\u2261', Eta: '\u0397', eta: '\u03B7', eth: '\u00F0', ETH: '\u00D0',
-  Euml: '\u00CB', euml: '\u00EB', euro: '\u20AC', exist: '\u2203', fnof: '\u0192',
-  forall: '\u2200', frac12: '\u00BD', frac14: '\u00BC', frac34: '\u00BE', frasl: '\u2044',
-  Gamma: '\u0393', gamma: '\u03B3', ge: '\u2265', gt: '>', hArr: '\u21D4',
-  harr: '\u2194', hearts: '\u2665', hellip: '\u2026', HilbertSpace: '\u210B',
-  Iacute: '\u00CD', iacute: '\u00ED', Icirc: '\u00CE', icirc: '\u00EE', iexcl: '\u00A1',
-  Igrave: '\u00CC', igrave: '\u00EC', image: '\u2111', infin: '\u221E', int: '\u222B',
-  Iota: '\u0399', iota: '\u03B9', iquest: '\u00BF', isin: '\u2208', Iuml: '\u00CF',
-  iuml: '\u00EF', Kappa: '\u039A', kappa: '\u03BA', Lambda: '\u039B', lambda: '\u03BB',
-  lang: '\u27E8', laquo: '\u00AB', larr: '\u2190', lArr: '\u21D0', lceil: '\u2308',
-  ldquo: '\u201C', le: '\u2264', lfloor: '\u230A', lowast: '\u2217', loz: '\u25CA',
-  lrm: '\u200E', lsaquo: '\u2039', lsquo: '\u2018', lt: '<', macr: '\u00AF',
-  mdash: '\u2014', micro: '\u00B5', middot: '\u00B7', minus: '\u2212', Mu: '\u039C',
-  mu: '\u03BC', nabla: '\u2207', nbsp: '\u00A0', ndash: '\u2013', ne: '\u2260',
-  ngE: '\u2267\u0338', ni: '\u220B', not: '\u00AC', notin: '\u2209', nsub: '\u2284',
-  Ntilde: '\u00D1', ntilde: '\u00F1', Nu: '\u039D', nu: '\u03BD', Oacute: '\u00D3',
-  oacute: '\u00F3', Ocirc: '\u00D4', ocirc: '\u00F4', Ograve: '\u00D2', ograve: '\u00F2',
-  oline: '\u203E', Omega: '\u03A9', omega: '\u03C9', Omicron: '\u039F', omicron: '\u03BF',
-  oplus: '\u2295', or: '\u2228', ordf: '\u00AA', ordm: '\u00BA', Oslash: '\u00D8',
-  oslash: '\u00F8', Otilde: '\u00D5', otilde: '\u00F5', otimes: '\u2297', Ouml: '\u00D6',
-  ouml: '\u00F6', para: '\u00B6', part: '\u2202', permil: '\u2030', perp: '\u22A5',
-  Phi: '\u03A6', phi: '\u03C6', Pi: '\u03A0', pi: '\u03C0', piv: '\u03D6',
-  plusmn: '\u00B1', pound: '\u00A3', prime: '\u2032', Prime: '\u2033', prod: '\u220F',
-  prop: '\u221D', Psi: '\u03A8', psi: '\u03C8', quot: '"', radic: '\u221A',
-  rang: '\u27E9', raquo: '\u00BB', rarr: '\u2192', rArr: '\u21D2', rceil: '\u2309',
-  rdquo: '\u201D', real: '\u211C', reg: '\u00AE', rfloor: '\u230B', Rho: '\u03A1',
-  rho: '\u03C1', rlm: '\u200F', rsaquo: '\u203A', rsquo: '\u2019', sbquo: '\u201A',
-  Scaron: '\u0160', scaron: '\u0161', sect: '\u00A7', shy: '\u00AD', Sigma: '\u03A3',
-  sigma: '\u03C3', sigmaf: '\u03C2', sim: '\u223C', spades: '\u2660', sub: '\u2282',
-  sube: '\u2286', sum: '\u2211', sup: '\u2283', sup1: '\u00B9', sup2: '\u00B2',
-  sup3: '\u00B3', supe: '\u2287', szlig: '\u00DF', Tau: '\u03A4', tau: '\u03C4',
-  there4: '\u2234', Theta: '\u0398', theta: '\u03B8', thetasym: '\u03D1', thinsp: '\u2009',
-  THORN: '\u00DE', thorn: '\u00FE', tilde: '\u02DC', times: '\u00D7', trade: '\u2122',
-  Uacute: '\u00DA', uacute: '\u00FA', uarr: '\u2191', uArr: '\u21D1', Ucirc: '\u00DB',
-  ucirc: '\u00FB', Ugrave: '\u00D9', ugrave: '\u00F9', uml: '\u00A8', upsih: '\u03D2',
-  Upsilon: '\u03A5', upsilon: '\u03C5', Uuml: '\u00DC', uuml: '\u00FC', weierp: '\u2118',
-  Xi: '\u039E', xi: '\u03BE', Yacute: '\u00DD', yacute: '\u00FD', yen: '\u00A5',
-  Yuml: '\u0178', yuml: '\u00FF', Zeta: '\u0396', zeta: '\u03B6', zwj: '\u200D',
-  zwnj: '\u200C',
-};
-
-/** Decode one entity starting at s[i] === '&'. Returns [decoded, nextIndex] or null. */
-/**
- * Match an entity reference at s[i] === '&'. Returns [value, nextIdx, raw]
- * or null. Numeric entities decode to a character (0, surrogates and
- * >0x10FFFF become U+FFFD; decimal >7 digits / hex >6 digits do not match).
- * Named entities are NOT decoded: `raw` is true and value is the literal
- * `&name;` reference, which marked passes through verbatim.
- */
+/** Decode one entity starting at s[i] === '&'. Returns [decoded,
+ * nextIndex, raw] or null. Numeric entities decode to a character (0,
+ * surrogates and >0x10FFFF become U+FFFD; decimal >7 digits / hex >6
+ * digits do not match). Named entities are NOT decoded: `raw` is true
+ * and value is the literal `&name;` reference, which marked passes
+ * through verbatim. */
 function parseEntity(s, i) {
   const n = s.length;
   if (i + 1 >= n) return null;
@@ -326,7 +289,6 @@ function parseEntity(s, i) {
     if (cp === 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) cp = 0xfffd;
     return [String.fromCodePoint(cp), j + 1, false];
   }
-  // named: word chars then ';' — passed through verbatim, never decoded
   let j = i + 1;
   while (j < n) {
     const c = s.charCodeAt(j);
@@ -337,28 +299,10 @@ function parseEntity(s, i) {
   return [s.slice(i, j + 1), j + 1, true];
 }
 
-/** Unescape backslash escapes (\ + ASCII punct -> punct). Entities are NOT decoded. */
-function unescapeBackslash(s) {
-  if (s.indexOf('\\') === -1) return s;
-  let out = '';
-  let last = 0;
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] === '\\' && i + 1 < s.length && isAsciiPunct(s[i + 1])) {
-      if (i > last) out += s.slice(last, i);
-      out += s[i + 1];
-      i++;
-      last = i + 1;
-    }
-  }
-  return last === 0 ? s : out + s.slice(last);
-}
-
-// ---------------------------------------------------------------- inline
-
-/** Normalize a link label: collapse whitespace, trim, lowercase. */
+/** Normalize a link label: collapse whitespace, trim, lowercase. Full
+ * case folding for ß/ẞ (both fold to 'ss'; toLowerCase alone leaves ß
+ * as ß, so a [ẞ] link would miss a [SS] definition). */
 function normalizeLabel(label) {
-  // full case folding for ß/ẞ (both fold to 'ss'; toLowerCase alone
-  // leaves ß as ß, so a [ẞ] link would miss a [SS] definition)
   return label.replace(/\s+/g, ' ').trim().toLowerCase().replace(/ß/g, 'ss');
 }
 
@@ -370,7 +314,8 @@ function isWs(ch) {
     ch === '\u205f' || ch === '\u3000';
 }
 
-/** Flanking info for a delimiter run at [start, end) in s. */
+/** Flanking info for a delimiter run at [start, end) in s: [canOpen,
+ * canClose] per the CommonMark left/right-flanking rules. */
 function flanking(s, start, end) {
   const before = start > 0 ? s[start - 1] : '';
   const after = end < s.length ? s[end] : '';
@@ -383,18 +328,26 @@ function flanking(s, start, end) {
   return [left, right];
 }
 
-/** Scan a run of `ch` starting at i. Returns run length. */
+/** Length of the run of `ch` starting at i. */
 function runLen(s, i, ch) {
   let j = i;
   while (j < s.length && s[j] === ch) j++;
   return j - i;
 }
 
-/**
- * Try to parse a link destination starting at s[i] (after '(' or after
+/** Skip spaces/tabs/newlines. Returns new index. */
+function skipWs(s, i) {
+  while (i < s.length && isSpace(s[i])) i++;
+  return i;
+}
+
+// ---------------------------------------------------------------- inline scanners
+
+/** Try to parse a link destination starting at s[i] (after '(' or after
  * `]:`). Returns [dest, nextIndex] or null. Handles <...> and bare
- * destinations with balanced parens.
- */
+ * destinations with balanced parens. A bare destination may run to the
+ * end of the text (a reference definition's destination need not be
+ * followed by ')' or whitespace). */
 function parseDest(s, i) {
   const n = s.length;
   if (i >= n) return null;
@@ -415,7 +368,6 @@ function parseDest(s, i) {
     }
     return null;
   }
-  // bare destination: no spaces/control chars, balanced parens
   let j = i;
   let depth = 0;
   let out = '';
@@ -439,12 +391,12 @@ function parseDest(s, i) {
       j++;
     }
   }
-  // a bare destination may run to the end of the text (a reference
-  // definition's destination need not be followed by ')' or whitespace)
   return [out, j];
 }
 
-/** Try to parse a link title starting at s[i]. Returns [title, nextIndex] or null. */
+/** Try to parse a link title starting at s[i]. Returns [title,
+ * nextIndex] or null. Titles are "...", '...', or (...) with backslash
+ * escapes; they may span lines. */
 function parseTitle(s, i) {
   const n = s.length;
   if (i >= n) return null;
@@ -493,16 +445,10 @@ function parseTitle(s, i) {
   return null;
 }
 
-/** Skip spaces/tabs/newlines. Returns new index. */
-function skipWs(s, i) {
-  while (i < s.length && isSpace(s[i])) i++;
-  return i;
-}
-
-/**
- * Try to parse an inline link `(dest "title")` starting at s[i] === '('.
- * Returns {dest, title, next} or null.
- */
+/** Try to parse an inline link `(dest "title")` starting at s[i] ===
+ * '('. Returns {dest, title, next} or null. A title must be separated
+ * from the destination by whitespace; a failed inline link does not
+ * deactivate the opener (the text may still be a shortcut reference). */
 function parseInlineLink(s, i) {
   const n = s.length;
   if (s[i] !== '(') return null;
@@ -511,10 +457,9 @@ function parseInlineLink(s, i) {
   if (s[j] === ')') return { dest: '', title: null, next: j + 1 };
   const d = parseDest(s, j);
   if (!d) return null;
-  let dest = d[0];
+  const dest = d[0];
   j = d[1];
   if (j < n && s[j] === ')') return { dest, title: null, next: j + 1 };
-  // a title must be separated from the destination by whitespace
   if (j >= n || !isSpace(s[j])) return null;
   j = skipWs(s, j);
   if (j >= n) return null;
@@ -526,16 +471,14 @@ function parseInlineLink(s, i) {
   return { dest, title: t[0], next: j + 1 };
 }
 
-/**
- * Scan a link label starting at s[i] === '['. Returns [label, nextIndex]
- * where nextIndex is just past the matching ']', or null. Handles nested
- * brackets and backslash escapes.
- */
+/** Scan a link label starting at s[i] === '['. Returns [label,
+ * nextIndex] where nextIndex is just past the matching ']', or null.
+ * A label ends at the FIRST unescaped ']' (labels do not nest: the text
+ * up to that ']' is the label, even if it contains an unmatched '[').
+ * An unescaped '[' inside a label makes it unbalanced: not a label.
+ * The returned text is raw (backslashes preserved) so that a label with
+ * an escape does not match one without it. */
 function scanLabel(s, i) {
-  // A label ends at the FIRST unescaped ']' (labels do not nest: the
-  // text up to that ']' is the label, even if it contains an unmatched
-  // '['). The returned text is raw (backslashes preserved) so that a
-  // label with an escape does not match one without it.
   const n = s.length;
   let j = i + 1;
   let label = '';
@@ -545,7 +488,6 @@ function scanLabel(s, i) {
       label += c + s[j + 1];
       j += 2;
     } else if (c === '[') {
-      // an unescaped '[' inside a label makes it unbalanced: not a label
       return null;
     } else if (c === ']') {
       return [label, j + 1];
@@ -557,17 +499,20 @@ function scanLabel(s, i) {
   return null;
 }
 
-/** Does a raw link label contain a backtick run that marked's label regex
- * cannot match? In a label, a backtick run must either open a code span
- * whose content has no backticks (closing run of any length, first one
- * wins) or be a `` run at the very end of the label. A run like the
- * opening `` of `` a ` b `` pairs with the inner single backtick, leaving
- * the closing `` unmatched, so the link never forms (the text still
- * renders the code span via the normal tokenizer rule). */
+/** Does a raw link label contain a backtick run that marked's label
+ * regex cannot match? In a label, a backtick run must either open a code
+ * span whose content has no backticks (closing run of any length, first
+ * one wins) or be a `` run at the very end of the label. A run like the
+ * opening `` of `` a ` b `` pairs with the inner single backtick,
+ * leaving the closing `` unmatched, so the link never forms (the text
+ * still renders the code span via the normal tokenizer rule). */
 function labelBadBackticks(label) {
   const n = label.length;
   let i = 0;
   while (i < n) {
+    // a backslash escape is not a backtick: `\`` in a label is an
+    // escaped backtick, and marked's label regex consumes it as one
+    if (label[i] === '\\' && i + 1 < n && isAsciiPunct(label[i + 1])) { i += 2; continue; }
     if (label[i] !== '`') { i++; continue; }
     const len = runLen(label, i, '`');
     let j = i + len;
@@ -586,33 +531,29 @@ function labelBadBackticks(label) {
   return false;
 }
 
-/** Is the char at s[i] the start of an HTML tag, comment, etc.? Returns end index or -1.
- * Validated per CommonMark: attribute names are [a-zA-Z_:][a-zA-Z0-9_.:-]*,
- * a '/' must sit directly before '>', a closing tag takes no attributes,
- * and a comment may not start with '>' or '->', contain '--', or end with '-'. */
+/** Is the char at s[i] the start of an HTML tag, comment, etc.? Returns
+ * end index or -1. Validated per CommonMark: attribute names are
+ * [a-zA-Z_:][a-zA-Z0-9_.:-]*, a '/' must sit directly before '>', a
+ * closing tag takes no attributes, and a comment may not start with '>'
+ * or '->', contain '--', or end with '-'. */
 function scanHtmlTag(s, i) {
   const n = s.length;
   if (s[i] !== '<' || i + 1 >= n) return -1;
   const c1 = s[i + 1];
-  // comment
   if (c1 === '!' && s.startsWith('<!--', i)) {
-    // abruptly closed empty comments are valid
     if (s.startsWith('<!-->', i)) return i + 5;
     if (s.startsWith('<!--->', i)) return i + 6;
-    // otherwise the content may not start with '>' or '->', or end with '-'
     if (s[i + 4] === '>' || s.startsWith('->', i + 4)) return -1;
     const end = s.indexOf('-->', i + 4);
     if (end === -1) return -1;
     if (s[end - 1] === '-') return -1;
     return end + 3;
   }
-  // processing instruction
   if (c1 === '?') {
     const end = s.indexOf('?>', i + 2);
     if (end === -1) return -1;
     return end + 2;
   }
-  // declaration
   if (c1 === '!') {
     if (i + 2 < n && s[i + 2] >= 'A' && s[i + 2] <= 'Z') {
       let j = i + 2;
@@ -626,27 +567,23 @@ function scanHtmlTag(s, i) {
     }
     return -1;
   }
-  // tag: optional /, tag name, attributes, optional /
   let j = i + 1;
   const closing = s[j] === '/';
   if (closing) j++;
   if (j >= n || !/[A-Za-z]/.test(s[j])) return -1;
   while (j < n && /[A-Za-z0-9-]/.test(s[j])) j++;
-  // after the tag name only whitespace, '/', or '>' may follow
-  // (so `<https://...>` is an autolink, not a tag)
+  // after the tag name only whitespace, '/', or '>' may follow (so
+  // `<https://...>` is an autolink, not a tag)
   if (j < n && s[j] !== ' ' && s[j] !== '\t' && s[j] !== '\n' && s[j] !== '/' && s[j] !== '>') return -1;
   if (closing) {
-    // a closing tag takes no attributes
     while (j < n && (s[j] === ' ' || s[j] === '\t' || s[j] === '\n')) j++;
     return j < n && s[j] === '>' ? j + 1 : -1;
   }
-  // open tag: attributes, then optional '/' directly before '>'
   for (;;) {
     while (j < n && (s[j] === ' ' || s[j] === '\t' || s[j] === '\n')) j++;
     if (j >= n) return -1;
     if (s[j] === '>') return j + 1;
     if (s[j] === '/') return j + 1 < n && s[j + 1] === '>' ? j + 2 : -1;
-    // attribute name
     if (!/[A-Za-z_:]/.test(s[j])) return -1;
     while (j < n && /[A-Za-z0-9_.:-]/.test(s[j])) j++;
     while (j < n && (s[j] === ' ' || s[j] === '\t' || s[j] === '\n')) j++;
@@ -661,12 +598,10 @@ function scanHtmlTag(s, i) {
         if (j >= n) return -1;
         j++;
       } else {
-        // unquoted value: one or more chars, none of space " ' = < > `
         const vs = j;
         while (j < n && s[j] !== ' ' && s[j] !== '\t' && s[j] !== '\n' && s[j] !== '"' && s[j] !== "'" && s[j] !== '=' && s[j] !== '<' && s[j] !== '>' && s[j] !== '`') j++;
         if (j === vs) return -1;
       }
-      // after a value only whitespace, '/', or '>' may follow
       if (j < n && s[j] !== ' ' && s[j] !== '\t' && s[j] !== '\n' && s[j] !== '/' && s[j] !== '>') return -1;
     }
   }
@@ -677,7 +612,6 @@ function scanAutolink(s, i) {
   const n = s.length;
   if (s[i] !== '<') return null;
   let j = i + 1;
-  // scheme: [A-Za-z][A-Za-z0-9+.-]{1,31}:
   let k = j;
   if (k < n && /[A-Za-z]/.test(s[k])) {
     k++;
@@ -692,7 +626,6 @@ function scanAutolink(s, i) {
       return null;
     }
   }
-  // email: [A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*
   let end = j;
   while (end < n && s[end] !== '>' && s[end] !== ' ' && s[end] !== '\n' && s[end] !== '<') end++;
   if (end < n && s[end] === '>') {
@@ -705,32 +638,29 @@ function scanAutolink(s, i) {
 }
 
 const GFM_SCHEMES = ['http://', 'https://', 'ftp://'];
-// marked's GFM autolink backpedal (its `_backpedal`), anchored: non-punct
-// runs, balanced (...) groups, a bare & (not an entity at the end), and
-// mid-string trailing punctuation only.
+// marked's GFM autolink backpedal: non-punct runs, balanced (...) groups,
+// a bare & (not an entity at the end), and mid-string trailing
+// punctuation only.
 const GFM_BACKPEDAL = /^(?:[^?!.,:;*_'\"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*_'\"~)]+(?!$))+/;
-// GFM email (marked's It): local@domain with at least one dot in the
-// domain, labels not ending in '-', and not followed by a word char or '-'
-// (the trailing-underscore form GFM_EMAIL_RE_U is used only when an active
-// '_' opener is on the stack, i.e. the '_' after the email closes emphasis
-// and marked's tokenizer never lets the email regex see it)
+// GFM email (marked's rule): local@domain with at least one dot in the
+// domain, labels not ending in '-', and not followed by a word char or
+// '-'. The trailing-underscore form GFM_EMAIL_RE_U is used only when an
+// active '_' opener is on the stack (the '_' after the email closes
+// emphasis and marked's tokenizer never lets the email regex see it).
 const GFM_EMAIL_RE = /^[A-Za-z0-9._+-]+@[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![\w-])/;
 const GFM_EMAIL_RE_U = /^[A-Za-z0-9._+-]+@[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![A-Za-z0-9-])/;
-/**
- * GFM extended autolink at s[i]: www. / scheme://. `prev` is the
- * previous char ('' at start). Returns [href, text, next] or null.
- */
+
+/** GFM extended autolink at s[i]: www. / scheme://. `prev` is the
+ * previous char ('' at start). Returns [href, text, next] or null. */
 function scanGfmAutolink(s, i, prev) {
   const n = s.length;
-  // www. or scheme://
   let isWww = false;
-  let start = i;
+  const start = i;
   if (s.startsWith('www.', i)) {
     // www. must be preceded by start, whitespace, or one of *_~(
     if (prev !== '' && !isSpace(prev) && prev !== '*' && prev !== '_' && prev !== '~' && prev !== '(') return null;
     isWww = true;
   } else {
-    // a scheme:// autolink may follow any character (e.g. '<')
     let isScheme = false;
     const low = s.slice(i, i + 8).toLowerCase();
     for (const sc of GFM_SCHEMES) {
@@ -758,8 +688,7 @@ function scanGfmAutolink(s, i, prev) {
   // marked's GFM backpedal: a regex matched from the start, repeated
   // until stable. It keeps runs of non-punct chars, balanced (...) groups,
   // and mid-string punctuation, but drops a '(' that never closes and any
-  // trailing punctuation (the (?!$) lookahead). ']' and '}' are ordinary
-  // chars here and are kept.
+  // trailing punctuation. ']' and '}' are ordinary chars here and kept.
   let text0 = text;
   let prevT;
   do {
@@ -771,14 +700,14 @@ function scanGfmAutolink(s, i, prev) {
   end = start + text.length;
   if (text.length === 0) return null;
   if (isWww) {
-    // www. needs a valid domain: a dot after www. with a TLD
     if (!/^www\.[^\s]*\.[^\s.]+$/.test(text) && !/^www\.[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/.test(text)) return null;
     return ['http://' + text, text, end];
   }
   return [text, text, end];
 }
 
-/** GFM email autolink: word@domain.tld starting at s[i] (i is start of word). */
+/** GFM email autolink: word@domain.tld starting at s[i] (i is the start
+ * of the word). */
 function scanGfmEmail(s, i, allowUnderscore) {
   const m = (allowUnderscore ? GFM_EMAIL_RE_U : GFM_EMAIL_RE).exec(s.slice(i));
   if (!m) return null;
@@ -786,16 +715,79 @@ function scanGfmEmail(s, i, allowUnderscore) {
   return ['mailto:' + text, text, i + text.length];
 }
 
-// A delimiter record in the inline parser's output/stack.
-function delim(ch, len, open, close, idx, img) {
-  return { ch, len, orig: len, open, close, active: true, idx, img: !!img, ot: '', ct: '' };
+/** Will the '[' opener at src position `openPos` (the '[' itself) form
+ * a link when its ']' is reached? Used to decide whether a GFM autolink
+ * or email inside link text must be suppressed: marked tokenizes the
+ * link atomically, so inner GFM forms only when the outer link does NOT
+ * form. Returns true when an inline link, a full reference, or a
+ * shortcut reference would form (including the label-backtick veto,
+ * which kills the link). */
+function linkWillForm(s, openPos, S) {
+  const lab = scanLabel(s, openPos);
+  if (!lab) return false;
+  const close = lab[1] - 1;
+  const labelText = s.slice(openPos + 1, close);
+  if (labelBadBackticks(labelText)) return false;
+  const after = lab[1];
+  if (after < s.length && s[after] === '(') {
+    return parseInlineLink(s, after) !== null;
+  }
+  if (after < s.length && s[after] === '[') {
+    const lab2 = scanLabel(s, after);
+    if (!lab2) return false;
+    const key = lab2[0] === '' ? normalizeLabel(labelText) : normalizeLabel(lab2[0]);
+    return S.refs.has(key);
+  }
+  return S.refs.has(normalizeLabel(labelText));
 }
 
-/** Render one output entry (string or delimiter record) to HTML. */
+// ---------------------------------------------------------------- emphasis
+
+/** A delimiter record in the inline parser's output/stack. `srcIdx` is
+ * the run's start in the source (for the veto-range and emStrong
+ * checks); `pos` is the '[' position for link/image openers. */
+function delim(ch, len, open, close, idx, img, srcIdx) {
+  return { ch, len, orig: len, open, close, active: true, idx, img: !!img, ot: null, ct: null, srcIdx, pos: -1, pairedFar: -1, bUsedFirst: -1 };
+}
+
+/** Render one output entry (string or delimiter record) to HTML. A
+ * record's opening tags are ordered outermost-first (the pair whose
+ * closer is farthest right, ties broken by smaller use first — an <em>
+ * formed from a run wraps a <strong> from the same run); its closing
+ * tags are ordered innermost-first (the pair whose opener is nearest,
+ * ties broken by larger use first). Pairs may form outer-first, so the
+ * order cannot rely on formation order. */
 function renderEntry(e) {
   if (typeof e === 'string') return e;
   if (e.ch === '[') return e.img ? '![' : '[';
-  return e.ct + e.ch.repeat(e.len) + e.ot;
+  let ot = '';
+  const otArr = e.ot;
+  if (otArr) {
+    if (otArr.length > 1) otArr.sort((a, b) => (b.far - a.far) || (a.use - b.use));
+    for (const t of otArr) ot += '<' + t.tag + '>';
+  }
+  let ct = '';
+  const ctArr = e.ct;
+  if (ctArr) {
+    if (ctArr.length > 1) ctArr.sort((a, b) => (b.near - a.near) || (b.use - a.use));
+    for (const t of ctArr) ct += '</' + t.tag + '>';
+  }
+  // a closer run's leftover delimiters split by marked's raw span: the
+  // pair consumes the run's FIRST bUsed delimiters (bUsed of the first
+  // pair that claimed this run as a closer), and the pair's text keeps
+  // the first (bUsed - use) of them, so they render INSIDE the pair
+  // (`two*</strong>`); the remaining (orig - bUsed) delimiters lie
+  // outside the pair's raw and render AFTER the closing tag (`foo</strong>*`)
+  let inLeft = 0;
+  let outLeft = e.len;
+  if (ctArr && ctArr.length > 0 && e.bUsedFirst >= 0) {
+    let usedByCloser = 0;
+    for (const t of ctArr) usedByCloser += t.use;
+    inLeft = Math.max(0, e.bUsedFirst - usedByCloser);
+    if (inLeft > e.len) inLeft = e.len;
+    outLeft = e.len - inLeft;
+  }
+  return e.ch.repeat(inLeft) + ct + e.ch.repeat(outLeft) + ot;
 }
 
 /** Render output entries [from, to) to HTML. */
@@ -805,13 +797,154 @@ function renderRange(out, from, to) {
   return s;
 }
 
-/**
- * Process emphasis delimiters in `stack` above index `bottom` (exclusive),
- * scanning closers left to right (the spec order: the first closer is
- * matched first, so an inner pair forms before an outer one). Mutates `out`
- * entries via the records' ot/ct.
- */
-function processEmphasis(stack, bottom, out) {
+/** marked's emStrong scan, adapted to the delimiter stack: decide whether
+ * opener `op` (at stack index `oi`) and closer `cl` (at stack index `ci`)
+ * may pair. `src` is the inline source text. Returns the number of
+ * delimiters to consume (1 for <em>, 2 for <strong>), or 0 when the
+ * pair must not form.
+ *
+ * The accounting mirrors marked's emStrong: `m` starts at the opener's
+ * ORIGINAL length and grows by every opener-type run between the two
+ * (their ORIGINAL lengths — a strong already formed from them still
+ * counts, because marked scans the raw text), and shrinks by every
+ * closer-type run. An ambiguous run (can both open and close) is
+ * skipped — its length added to `f` — when y%3 != 0 and (y+len)%3 == 0,
+ * where y is the opener's ORIGINAL length (marked's y is the whole run,
+ * including delimiters already spent on an inner pair). The closer
+ * itself goes through the same rule-of-3 check when it is ambiguous
+ * (or a closer-only run while the opener could also close, `rFlag`),
+ * and its ORIGINAL length is what `m` subtracts. The pair forms only
+ * when m <= 0 after the closer is consumed; the usable closer length
+ * is min(cl.orig, cl.orig + m + f). Only the final use is capped by
+ * the delimiters still available (op.len / cl.len). */
+function emPairUse(op, cl, stack, oi, ci, src) {
+  const ch = op.ch;
+  // y is the opener run's length as marked sees it: the ORIGINAL run
+  // length when the closer lies after every pair the opener has already
+  // formed (the pair is marked's single scan of the raw text), but the
+  // LEFTOVER length when the closer lies inside such a pair's span
+  // (the pair is formed in the re-lex of that pair's text, where the
+  // leftover delimiters are the whole run — e.g. `____foo__ bar__`
+  // re-lexes `__foo__ bar` with a 2-long opener, not 4-long)
+  const y = cl.srcIdx <= op.pairedFar ? op.len : op.orig;
+  if (op.len <= 0 || cl.len <= 0) return 0;
+  // marked's emStrong RDelim regex has a leading alternative that
+  // swallows a `__...*...__` span (for `*` scans) or a `**..._...**`
+  // span (for `_` scans) at the very start of the scan, so a delimiter
+  // run inside it never counts as an opener or a closer. The span must
+  // start at the first `*`/`_` after the opener, with no `*`/`_` before
+  // it, and the inner run must be a single delimiter.
+  let skipA = -1;
+  let skipB = -1;
+  if (ch === '*' || ch === '_') {
+    const open2 = ch === '*' ? '__' : '**';
+    const inner = ch === '*' ? '*' : '_';
+    let q = op.srcIdx + op.orig;
+    while (q < src.length && src[q] !== '*' && src[q] !== '_') q++;
+    if (q < src.length && src.startsWith(open2, q)) {
+      let r = q + 2;
+      while (r < src.length && src[r] !== '*' && src[r] !== '_') r++;
+      if (r < src.length && src[r] === inner && src[r + 1] !== inner) {
+        let s2 = r + 1;
+        while (s2 < src.length && src[s2] !== '*' && src[s2] !== '_') s2++;
+        if (s2 < src.length && src.startsWith(open2, s2)) {
+          skipA = q;
+          skipB = s2 + 2;
+        }
+      }
+    }
+  }
+  if (skipA !== -1 && cl.srcIdx >= skipA && cl.srcIdx < skipB) return 0;
+  // rFlag: the opener could also close (marked's R): the char before it
+  // is non-whitespace and the char after it is punctuation, or (for '*')
+  // the char before it is not punctuation.
+  const before = op.srcIdx > 0 ? src[op.srcIdx - 1] : '';
+  const after = op.srcIdx + op.orig < src.length ? src[op.srcIdx + op.orig] : '';
+  const rFlag = !!op.close && before !== '' && !isWs(before) &&
+    (isPunct(after) || (ch === '*' && !isPunct(before)));
+  // scan the opener's accounting up to the closer at stack index `j`:
+  // `m`/`f` mirror marked's emStrong scan (opener-type runs add, closer
+  // -type runs subtract, ambiguous runs are skipped into `f` by the
+  // rule of 3). `skip` means the closer at `j` itself is rule-of-3
+  // -skipped for this opener and cannot be its pair.
+  function scanTo(j) {
+    const c = stack[j];
+    if (c.open && c.close) {
+      if (y % 3 !== 0 && (y + c.orig) % 3 === 0) return { skip: true };
+    } else if (rFlag && c.close && !c.open) {
+      if (y % 3 !== 0 && (y + c.orig) % 3 === 0) return { skip: true };
+    }
+    let m2 = y;
+    let f2 = 0;
+    for (let k = oi + 1; k < j; k++) {
+      const r = stack[k];
+      if (r.ch !== ch || r.ch === '[' || r.orig === 0) continue;
+      if (skipA !== -1 && r.srcIdx >= skipA && r.srcIdx < skipB) continue;
+      const len = r.orig;
+      if (r.open && !r.close) {
+        m2 += len;
+      } else if (r.close && !r.open) {
+        if (rFlag && y % 3 !== 0 && (y + len) % 3 === 0) f2 += len;
+        else m2 -= len;
+      } else if (r.open && r.close) {
+        if (y % 3 !== 0 && (y + len) % 3 === 0) f2 += len;
+        else m2 -= len;
+      }
+    }
+    m2 -= c.orig;
+    return { m: m2, f: f2, skip: false };
+  }
+  const res = scanTo(ci);
+  if (res.skip) return null;
+  const m = res.m;
+  const f = res.f;
+  if (m > 0) {
+    // not enough closers for the full opener run: marked keeps scanning
+    // for a later closer and only retries the run's suffix when the scan
+    // exhausts. But the suffix retry is also how a strong's leftover
+    // delimiter pairs on (e.g. `**foo* bar*` is two ems, not one): the
+    // retry is wrong only when the later full-run pair would be a
+    // STRONG (use 2) — then the suffix-first decomposition gives two
+    // ems where marked gives one strong. When the later pair would be
+    // an em (use 1) the two decompositions agree, so the retry stands.
+    for (let j = ci + 1; j < stack.length; j++) {
+      const c2 = stack[j];
+      if (c2.ch !== ch || c2.ch === '[' || !c2.active || !c2.close || c2.len === 0) continue;
+      if (skipA !== -1 && c2.srcIdx >= skipA && c2.srcIdx < skipB) continue;
+      const r2 = scanTo(j);
+      if (r2.skip || r2.m > 0) continue;
+      const b2 = Math.min(c2.orig, c2.orig + r2.m + r2.f);
+      if (b2 < 1) continue;
+      const useLater = Math.min(op.len, c2.len, b2, 2);
+      if (useLater === 2) return null;
+    }
+    // no later closer pairs as a strong: retry the run's suffix as a
+    // shorter opener (e.g. `**foo*` pairs its second `*` with the
+    // closer, leaving the first `*` literal). The pair forms with the
+    // balanced length, or not at all.
+    const eff = op.len - m;
+    if (eff < 1) return null;
+    return { use: Math.min(eff, cl.len, 2), bUsed: cl.orig };
+  }
+  const bUsed = Math.min(cl.orig, cl.orig + m + f);
+  if (bUsed < 1) return null;
+  return { use: Math.min(op.len, cl.len, bUsed, 2), bUsed };
+}
+
+/** Process emphasis delimiters in `stack` above index `bottom`
+ * (exclusive), scanning closers left to right (the spec order: the first
+ * closer is matched first, so an inner pair forms before an outer one).
+ * Mutates `out` entries via the records' ot/ct. `vetoed` is a list of
+ * [start, end) source ranges (labels whose link was vetoed for bad
+ * backticks): a pair whose opener and closer both lie inside one such
+ * range stays literal.
+ *
+ * Two differences from a plain delimiter stack: pairs must pass
+ * emPairUse (marked's scan), and when a pair forms the records between
+ * opener and closer are NOT removed — the scan restarts just after the
+ * opener so an inner pair that the outer pair consumed (e.g. `***a**b*`)
+ * can still form from the leftover delimiters. */
+function processEmphasis(stack, bottom, out, src, vetoed) {
   let cur = bottom + 1;
   while (cur < stack.length) {
     const closer = stack[cur];
@@ -819,21 +952,42 @@ function processEmphasis(stack, bottom, out) {
       cur++;
       continue;
     }
-    // find the nearest matching opener
     let found = -1;
-    for (let oi = cur - 1; oi > bottom; oi--) {
+    let use = 0;
+    let bUsed = 0;
+    // openers are tried farthest-first (outermost first): marked tries
+    // the leftmost opener first and its scan claims the closer, so an
+    // inner opener must not steal a closer the outer opener would pair
+    // with (e.g. `**a *b **c**d* e**` pairs the outer `**` as strong)
+    for (let oi = bottom + 1; oi < cur; oi++) {
       const op = stack[oi];
       if (!op.active || op.ch === '[' || op.ch !== closer.ch || !op.open || op.len === 0) continue;
       // the odd rule: skip this opener when the match would use a single
       // delimiter (an <em>, not a <strong>), either side can both open
       // and close, and their original lengths sum odd (the closer is
       // saved as an opener for a later match)
-      const use = Math.min(op.len, closer.len, 2);
+      const u0 = Math.min(op.len, closer.len, 2);
       const odd =
-        use === 1 && ((op.open && op.close) || (closer.open && closer.close)) &&
+        u0 === 1 && ((op.open && op.close) || (closer.open && closer.close)) &&
         (op.orig + closer.orig) % 2 === 1;
       if (odd) continue;
+      // vetoed-label range: marked masks a failed link's whole span in
+      // its emphasis scan, so a delimiter inside a vetoed label cannot
+      // pair with anything — inside the label or outside it (e.g. the
+      // `_an` opener in a vetoed `[cache _an ..._ escape](...)` must not
+      // pair with a later `_` closer)
+      if (vetoed) {
+        let inVeto = false;
+        for (const [a, b] of vetoed) {
+          if ((op.srcIdx >= a && op.srcIdx < b) || (closer.srcIdx >= a && closer.srcIdx < b)) { inVeto = true; break; }
+        }
+        if (inVeto) continue;
+      }
+      const r = emPairUse(op, closer, stack, oi, cur, src);
+      if (!r) continue;
       found = oi;
+      use = r.use;
+      bUsed = r.bUsed;
       break;
     }
     if (found < 0) {
@@ -841,31 +995,51 @@ function processEmphasis(stack, bottom, out) {
       continue;
     }
     const opener = stack[found];
-    const use = Math.min(opener.len, closer.len, 2);
     const tag = opener.ch === '~' ? 'del' : use === 2 ? 'strong' : 'em';
     opener.len -= use;
-    opener.ot = '<' + tag + '>' + opener.ot;
+    (opener.ot || (opener.ot = [])).push({ tag, far: closer.idx, use });
+    // the farthest closer this opener has paired with: a later pairing
+    // whose closer lies at or before it is a re-lex inner pair (its y
+    // is the leftover length), not a continuation of the raw scan
+    if (closer.srcIdx > opener.pairedFar) opener.pairedFar = closer.srcIdx;
     closer.len -= use;
-    closer.ct = closer.ct + '</' + tag + '>';
-    // remove delimiters between opener and closer from the stack
-    if (cur - found > 1) {
-      stack.splice(found + 1, cur - found - 1);
-      cur = found + 1;
-    }
+    (closer.ct || (closer.ct = [])).push({ tag, near: opener.idx, use });
+    // the first pair to claim this run as a closer is the outermost
+    // one; its bUsed fixes where the run's leftover delimiters render
+    if (closer.bUsedFirst < 0) closer.bUsedFirst = bUsed;
     if (opener.len === 0) opener.active = false;
     if (closer.len === 0) {
       closer.active = false;
       cur++;
     }
-    // else: closer still has delimiters; re-examine it (stay at cur)
+    // Records strictly between opener and closer cannot form pairs
+    // outside this span (marked tokenizes the pair's content
+    // recursively): drop them from the stack, EXCEPT same-char
+    // emphasis records, which may still pair with the opener's
+    // leftover delimiters (e.g. `***a**b*`) — and even when already
+    // paired they still count in a later outer opener's emStrong
+    // accounting, so inactive ones stay too. The closer itself is
+    // outside the range and stays (inactive records are skipped by
+    // the scan, but still counted by emPairUse). Their output entries
+    // stay, so they still render literally.
+    let closerIdx = closer.len === 0 ? cur - 1 : cur;
+    let w = found + 1;
+    while (w < closerIdx) {
+      const r = stack[w];
+      if (r.ch === opener.ch) { w++; continue; }
+      stack.splice(w, 1);
+      cur--;
+      closerIdx--;
+    }
+    // restart just after the opener: the kept records between opener and
+    // closer may still form inner pairs from leftover delimiters
+    cur = found + 1;
   }
 }
 
-/**
- * Plain-text rendering of a source range (for image alt text and shortcut
- * reference labels): render it as inline HTML, strip the tags, and unescape
- * the entities the renderer produced.
- */
+/** Plain-text rendering of a source range (for image alt text): render
+ * it as inline HTML, strip the tags, and unescape the entities the
+ * renderer produced. */
 function unescapeEntities(s) {
   if (s.indexOf('&') === -1) return s;
   return s.replace(/&(amp|lt|gt|quot|#39);/g, (_m, e) =>
@@ -874,10 +1048,36 @@ function unescapeEntities(s) {
 
 function plainText(src, S) {
   const html = inlineParse(src, S);
-  // an <img> in the rendered text contributes its alt text (cm-574:
-  // ![foo ![bar](/url)](/url2) has alt "foo bar", not "foo ")
+  // an <img> in the rendered text contributes its alt text
   const withAlt = html.replace(/<img src="[^"]*" alt="([^"]*)"[^>]*>/g, '$1');
   return unescapeEntities(withAlt.replace(/<[^>]*>/g, ''));
+}
+
+// ---------------------------------------------------------------- inline parser
+
+const NEXT_SPECIAL = /[\\`*_~[\]!<&@\n]/g;
+const GFM_START = /www\.|https?:\/\/|ftp:\/\//gi;
+
+/** Index of the next inline-significant position at or after `from`:
+ * the next special char, or the next GFM autolink start (www. /
+ * scheme://) if it comes first. Plain text between here and there needs
+ * no per-character dispatch. */
+function nextSpecial(src, from) {
+  NEXT_SPECIAL.lastIndex = from;
+  const m = NEXT_SPECIAL.exec(src);
+  let k = m ? m.index : src.length;
+  GFM_START.lastIndex = from;
+  const g = GFM_START.exec(src);
+  if (g && g.index < k) k = g.index;
+  return k;
+}
+
+/** The nearest active '[' opener in the stack, or null. */
+function openBracket(stack) {
+  for (let k = stack.length - 1; k >= 0; k--) {
+    if (stack[k].ch === '[' && stack[k].active) return stack[k];
+  }
+  return null;
 }
 
 /** The inline parser: renders one leaf block's text to HTML. */
@@ -893,6 +1093,9 @@ function inlineParse(src, S) {
   // suppressMode 2 = clear only on a len>=2 span, 1 = clear on any span.
   let suppressEmph = false;
   let suppressMode = 0;
+  // source ranges of labels whose link was vetoed for bad backticks:
+  // emphasis with both ends inside one such range stays literal.
+  const vetoed = [];
   const flush = (to) => {
     if (to > t0) out.push(esc(src.slice(t0, to)));
   };
@@ -912,8 +1115,8 @@ function inlineParse(src, S) {
           t0 = i;
         } else if (isAsciiPunct(d)) {
           // the backslash is dropped; the char joins the plain run
-          // (it is already literal in the source, so just skip the backslash
-          // by flushing up to i and pushing the escaped char)
+          // (it is already literal in the source, so just skip the
+          // backslash by flushing up to i and pushing the escaped char)
           flush(i);
           out.push(esc(d));
           i += 2;
@@ -954,8 +1157,6 @@ function inlineParse(src, S) {
         if (stack[k].ch === '[' && stack[k].active) { inLink = true; break; }
       }
       if (inLink) {
-        // NB: `j` was advanced by the closer search above; both scans
-        // here start fresh just past the opening run.
         let closeBracket = -1;
         for (let q = i + len; q < n; q++) {
           if (src[q] === ']' && src[q - 1] !== '\\') { closeBracket = q; break; }
@@ -966,12 +1167,11 @@ function inlineParse(src, S) {
             if (src[q] === '`') { anyTick = q; break; }
           }
           if (anyTick !== -1) {
-            // the label matches (counts need not agree, e.g. ``url` ):
-            // consume opening run, content, and closer run as literal
-            // text so the closer is not re-processed as a new opener.
-            // Remember the mismatch on the opener: marked's emphasis
-            // masking suppresses emphasis after such a link until the
-            // next code span (see suppressEmph in inlineParse).
+            // the label matches: consume opening run, content, and
+            // closer run as literal text so the closer is not
+            // re-processed as a new opener. Remember the mismatch on
+            // the opener: marked's emphasis masking suppresses
+            // emphasis after such a link until the next code span.
             for (let k = stack.length - 1; k >= 0; k--) {
               if (stack[k].ch === '[' && stack[k].active) { stack[k].mismatch = true; stack[k].mismatchLen = len; break; }
             }
@@ -1025,10 +1225,19 @@ function inlineParse(src, S) {
     if (c === '*' || c === '_' || c === '~') {
       const len = runLen(src, i, c);
       // emphasis suppressed after a mismatched-backtick link until the
-      // next code span: leave the run in the plain-text run.
+      // next code span: leave the run in the plain-text run. But NOT
+      // inside link text — marked tokenizes a link's label recursively
+      // (a fresh, unmasked scan), so `*fast*` in a later link's label
+      // still forms emphasis even while the outer text is suppressed.
       if (suppressEmph) {
-        i += len;
-        continue;
+        let inLinkText = false;
+        for (let k = 0; k < stack.length; k++) {
+          if (stack[k].ch === '[' && stack[k].active) { inLinkText = true; break; }
+        }
+        if (!inLinkText) {
+          i += len;
+          continue;
+        }
       }
       const [left, right] = flanking(src, i, i + len);
       let open, close;
@@ -1055,7 +1264,7 @@ function inlineParse(src, S) {
         continue;
       }
       flush(i);
-      const rec = delim(c, len, open, close, out.length, false);
+      const rec = delim(c, len, open, close, out.length, false, i);
       out.push(rec);
       stack.push(rec);
       i += len;
@@ -1067,7 +1276,7 @@ function inlineParse(src, S) {
       const img = c === '!';
       const pos = img ? i + 1 : i;
       flush(i);
-      const rec = delim('[', 0, false, false, out.length, img);
+      const rec = delim('[', 0, false, false, out.length, img, pos);
       rec.pos = pos;
       out.push(rec);
       stack.push(rec);
@@ -1147,8 +1356,10 @@ function inlineParse(src, S) {
         continue;
       }
       // a label with a backtick run the label regex cannot match (a
-      // code span whose content holds a backtick) never forms a link
+      // code span whose content holds a backtick) never forms a link;
+      // remember the label's range so emphasis inside it stays literal
       if (labelBadBackticks(src.slice(opener.pos + 1, i))) {
+        vetoed.push([opener.pos + 1, i]);
         stack.splice(p, 1);
         i++;
         continue;
@@ -1156,7 +1367,7 @@ function inlineParse(src, S) {
       // flush the link text run into `out` before rendering it
       flush(i);
       // process emphasis inside the link text
-      processEmphasis(stack, p, out);
+      processEmphasis(stack, p, out, src, vetoed);
       const textHtml = renderRange(out, opener.idx + 1, out.length);
       out.length = opener.idx;
       if (opener.img) {
@@ -1243,6 +1454,14 @@ function inlineParse(src, S) {
       }
       const tagEnd = scanHtmlTag(src, i);
       if (tagEnd !== -1) {
+        // marked's tag tokenizer tracks <a> tags on the lexer state:
+        // an `<a ...>` tag sets inLink (suppressing later GFM autolinks
+        // until a `</a>` clears it), and the state persists across
+        // blocks — an unclosed `<a>` suppresses every later bare URL
+        // and email in the document
+        const tag = src.slice(i, tagEnd);
+        if (/^<a /i.test(tag)) S.inLink = true;
+        else if (/^<\/a>/i.test(tag)) S.inLink = false;
         flush(i);
         out.push(src.slice(i, tagEnd));
         i = tagEnd;
@@ -1254,18 +1473,17 @@ function inlineParse(src, S) {
     }
     // --- GFM extended autolink: www. / scheme:// (scheme is
     // case-insensitive: "Https://..." is a link too). A GFM autolink
-    // never forms inside link text: a link cannot contain a link
-    // (marked: "[private https://example.com/x method](...)" keeps the
-    // bare URL as plain text). Angle autolinks <...> DO nest, so only
-    // the GFM forms are suppressed here.
-    if ((c === 'w' && src.startsWith('www.', i)) ||
+    // never forms inside link text that WILL form a link (marked
+    // tokenizes the link atomically, so a link cannot contain a link);
+    // but when the outer link does not form, the bare URL inside its
+    // label still links. Angle autolinks <...> DO nest, so only the
+    // GFM forms are suppressed here.
+    if (((c === 'w' || c === 'W') && src.slice(i, i + 4).toLowerCase() === 'www.') ||
         ((c === 'h' || c === 'H') && (/^https?:\/\//i.test(src.slice(i, i + 8)))) ||
         ((c === 'f' || c === 'F') && src.slice(i, i + 6).toLowerCase() === 'ftp://')) {
-      let inLink = false;
-      for (let k = stack.length - 1; k >= 0; k--) {
-        if (stack[k].ch === '[' && stack[k].active) { inLink = true; break; }
-      }
-      if (!inLink) {
+      const br = openBracket(stack);
+      const suppressed = S.inLink || (br !== null && linkWillForm(src, br.pos, S));
+      if (!suppressed) {
         const prev = i > 0 ? src[i - 1] : '';
         const g = scanGfmAutolink(src, i, prev);
         if (g) {
@@ -1276,76 +1494,75 @@ function inlineParse(src, S) {
           continue;
         }
       }
-      i++;
+      i = nextSpecial(src, i + 1);
       continue;
     }
     // --- GFM email autolink: look back for a word start at '@'.
-    // Suppressed inside link text, like the GFM bare-URL autolink.
+    // Suppressed inside link text that will form a link, like the GFM
+    // bare-URL autolink.
     if (c === '@') {
-      let inLink = false;
-      for (let k = stack.length - 1; k >= 0; k--) {
-        if (stack[k].ch === '[' && stack[k].active) { inLink = true; break; }
-      }
-      if (!inLink) {
-      // find word start
-      let ws = i - 1;
-      while (ws >= t0) {
-        const ch = src[ws];
-        if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
-            ch === '.' || ch === '_' || ch === '-' || ch === '+') ws--;
-        else break;
-      }
-      ws++;
-      if (ws < i) {
-        // a trailing '_' after the email only extends it when it closes
-        // an active '_' opener (marked tokenizes emphasis first); with
-        // no opener the '_' blocks the match, as in marked's (?![\w-])
-        let allowU = false;
-        for (let k = stack.length - 1; k >= 0; k--) {
-          if (stack[k].ch === '_' && stack[k].active && stack[k].open) { allowU = true; break; }
+      const br = openBracket(stack);
+      const suppressed = S.inLink || (br !== null && linkWillForm(src, br.pos, S));
+      if (!suppressed) {
+        // find word start
+        let ws = i - 1;
+        while (ws >= t0) {
+          const ch = src[ws];
+          if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+              ch === '.' || ch === '_' || ch === '-' || ch === '+') ws--;
+          else break;
         }
-        const em = scanGfmEmail(src, ws, allowU);
-        if (em) {
-          // a mailto:/xmpp: scheme immediately before the email is
-          // part of the link (only those two schemes; any other 'foo:'
-          // stays literal and only the email links)
-          let href = em[0];
-          let text = em[1];
-          let start = ws;
-          let end = em[2];
-          for (const sc of ['mailto:', 'xmpp:']) {
-            if (ws >= sc.length && src.slice(ws - sc.length, ws) === sc) {
-              const b = ws - sc.length;
-              const pb = b > 0 ? src[b - 1] : '';
-              if (pb === '' || isSpace(pb) || pb === '*' || pb === '_' || pb === '~' || pb === '(') {
-                start = b;
-                href = sc + em[1];
-                text = sc + em[1];
-                if (sc === 'xmpp:') {
-                  // optional /path after an xmpp: email
-                  let p = end;
-                  if (src[p] === '/') {
-                    let q = p + 1;
-                    while (q < src.length && /[A-Za-z0-9@.]/.test(src[q])) q++;
-                    if (q > p + 1) {
-                      end = q;
-                      href += src.slice(p, q);
-                      text += src.slice(p, q);
+        ws++;
+        if (ws < i) {
+          // a trailing '_' after the email only extends it when it closes
+          // an active '_' opener (marked tokenizes emphasis first); with
+          // no opener the '_' blocks the match, as in marked's (?![\w-])
+          let allowU = false;
+          for (let k = stack.length - 1; k >= 0; k--) {
+            if (stack[k].ch === '_' && stack[k].active && stack[k].open) { allowU = true; break; }
+          }
+          const em = scanGfmEmail(src, ws, allowU);
+          if (em) {
+            // a mailto:/xmpp: scheme immediately before the email is
+            // part of the link (only those two schemes; any other 'foo:'
+            // stays literal and only the email links)
+            let href = em[0];
+            let text = em[1];
+            let start = ws;
+            let end = em[2];
+            for (const sc of ['mailto:', 'xmpp:']) {
+              if (ws >= sc.length && src.slice(ws - sc.length, ws) === sc) {
+                const b = ws - sc.length;
+                const pb = b > 0 ? src[b - 1] : '';
+                if (pb === '' || isSpace(pb) || pb === '*' || pb === '_' || pb === '~' || pb === '(') {
+                  start = b;
+                  href = sc + em[1];
+                  text = sc + em[1];
+                  if (sc === 'xmpp:') {
+                    // optional /path after an xmpp: email
+                    let p = end;
+                    if (src[p] === '/') {
+                      let q = p + 1;
+                      while (q < src.length && /[A-Za-z0-9@.]/.test(src[q])) q++;
+                      if (q > p + 1) {
+                        end = q;
+                        href += src.slice(p, q);
+                        text += src.slice(p, q);
+                      }
                     }
                   }
                 }
+                break;
               }
-              break;
             }
+            flush(start);
+            out.push('<a href="' + encodeHref(href) + '">' + escNoEncode(text) + '</a>');
+            i = end;
+            t0 = i;
+            continue;
           }
-          flush(start);
-          out.push('<a href="' + encodeHref(href) + '">' + escNoEncode(text) + '</a>');
-          i = end;
-          t0 = i;
-          continue;
         }
       }
-      } // !inLink
       i++;
       continue;
     }
@@ -1374,15 +1591,20 @@ function inlineParse(src, S) {
       }
       continue;
     }
-    i++;
+    // --- plain text: jump to the next significant position (start
+    // after i: the char here is plain, or a '!' not followed by '[',
+    // which nextSpecial would otherwise return unchanged)
+    i = nextSpecial(src, i + 1);
   }
   flush(n);
-  processEmphasis(stack, -1, out);
+  processEmphasis(stack, -1, out, src, vetoed);
   return out.map(renderEntry).join('');
 }
 
 // ---------------------------------------------------------------- blocks
 
+/** A fenced-code opener at the start of `s`: {char, len, info}, or null.
+ * Backtick fences may not contain a backtick in the info string. */
 function matchFence(s) {
   const c = s[0];
   if (c !== '`' && c !== '~') return null;
@@ -1394,6 +1616,8 @@ function matchFence(s) {
   return { char: c, len, info };
 }
 
+/** An ATX heading at the start of `s`: {level, text}, or null. A closing
+ * sequence of #'s is stripped only when preceded by whitespace. */
 function matchATX(s) {
   if (s[0] !== '#') return null;
   let level = 0;
@@ -1409,6 +1633,7 @@ function matchATX(s) {
   return { level, text };
 }
 
+/** A thematic break: 3+ of the same -, *, _ with only spaces/tabs. */
 function isHr(s) {
   const c = s[0];
   if (c !== '*' && c !== '-' && c !== '_') return false;
@@ -1421,12 +1646,12 @@ function isHr(s) {
   return count >= 3;
 }
 
+/** A setext underline: 1 for '=', 2 for '-', 0 otherwise. The line must
+ * be a run of one char plus trailing spaces/tabs only. */
 function matchSetext(s) {
   if (s.length === 0) return 0;
   const c = s[0];
   if (c !== '=' && c !== '-') return 0;
-  // a run of the same char, then only trailing spaces/tabs
-  // (`= =` and `--- -` are not underlines)
   let i = 1;
   while (i < s.length && s[i] === c) i++;
   while (i < s.length && (s[i] === ' ' || s[i] === '\t')) i++;
@@ -1443,7 +1668,8 @@ const BLOCK_TAGS = new Set([
   'tbody', 'td', 'tfoot', 'th', 'thead', 'title', 'tr', 'track', 'ul',
 ]);
 
-/** HTML block type (1-7) for a line's content, or 0. `forInterrupt` when the line follows a paragraph. */
+/** HTML block type (1-7) for a line's content, or 0. `forInterrupt`
+ * when the line follows a paragraph (type 7 cannot interrupt one). */
 function htmlBlockType(s, forInterrupt) {
   if (s[0] !== '<') return 0;
   const m1 = /^<(script|pre|style|textarea)([ \t>]|$)/i.exec(s);
@@ -1477,15 +1703,16 @@ function htmlBlockType(s, forInterrupt) {
   return 0;
 }
 
-/**
- * Parse a link reference definition starting at lines[k]. Returns the number
- * of lines consumed, or 0 when the lines do not form a definition.
- */
+/** Parse a link reference definition starting at lines[k]. Returns the
+ * number of lines consumed, or 0 when the lines do not form a
+ * definition. The label may span lines; the destination may be <...> or
+ * bare; a title may follow on the same line or the next line (at most
+ * one newline separates it from the destination). First definition
+ * wins for a label. */
 function tryParseRefDef(lines, k, S) {
   const line = lines[k];
   const [ind, idx] = lineIndent(line);
   if (ind >= 4 || line[idx] !== '[') return 0;
-  // the label may span lines, so scan it in the joined text
   const text = lines.slice(k).join('\n');
   const lab = scanLabel(text, idx);
   if (!lab || text[lab[1]] !== ':') return 0;
@@ -1500,8 +1727,6 @@ function tryParseRefDef(lines, k, S) {
   // only whitespace (or the end) may follow the destination
   if (pos < text.length && !isSpace(text[pos])) return 0;
   let title = null;
-  // a title may follow on the same line or the next line (at most one
-  // newline separates it from the destination)
   let p2 = pos;
   while (p2 < text.length && (text[p2] === ' ' || text[p2] === '\t')) p2++;
   if (p2 < text.length && text[p2] === '\n') {
@@ -1537,7 +1762,9 @@ function tryParseRefDef(lines, k, S) {
   return consumed;
 }
 
-/** Split a table row on unescaped pipes outside code spans; trim cells. */
+/** Split a table row on unescaped pipes; trim cells. Marked's table
+ * split only respects `\|` escapes, so a `|` inside a code span IS a
+ * cell separator (code spans are not protected here). */
 function splitTableRow(line) {
   const cells = [];
   let cur = '';
@@ -1582,7 +1809,8 @@ function parseDelimiterRow(line) {
   return aligns;
 }
 
-/** A list marker at the start of `s` (content after 0-3 indent), or null. */
+/** A list marker at the start of `s` (content after 0-3 indent), or
+ * null. `startCol` is the marker's absolute column. */
 function matchListMarker(s, startCol) {
   const sc = startCol || 0;
   const c0 = s[0];
@@ -1610,7 +1838,6 @@ function matchListMarker(s, startCol) {
   } else {
     return null;
   }
-  // whitespace after the marker
   const after = s[markerLen];
   if (after !== undefined && after !== ' ' && after !== '\t') return null;
   // content column (absolute): marker column + whitespace width (1-4),
@@ -1658,8 +1885,8 @@ function isParaContinuation(line) {
   return !canInterruptParagraph(s);
 }
 
-// Track fenced-code state for lazy-continuation decisions while collecting
-// container lines. `st` is {inFence, char, len}.
+// Track fenced-code state for lazy-continuation decisions while
+// collecting container lines. `st` is {inFence, char, len}.
 function trackFence(line, st) {
   const [ind, idx] = lineIndent(line);
   if (ind >= 4) return;
@@ -1679,6 +1906,8 @@ function trackFence(line, st) {
     if (len >= st.len && isBlank(s.slice(len))) st.inFence = false;
   }
 }
+
+// ---------------------------------------------------------------- block parsers
 
 function parseIndentedCode(lines, i, hi, out) {
   const code = [];
@@ -1703,12 +1932,15 @@ function parseIndentedCode(lines, i, hi, out) {
   return j;
 }
 
-function parseFenced(lines, i, hi, out, fence, fenceIndent) {
+function parseFenced(lines, i, hi, out, fence, fenceIndentChars) {
   const content = [];
   let j = i + 1;
-  // marked quirk: only backtick fences dedent their content by the
-  // opening fence's indent; tilde fences keep content lines as-is
-  const dedent = fence.char === '~' ? 0 : fenceIndent;
+  // marked's Dt: a backtick fence removes up to the opener's leading-
+  // whitespace CHARACTER count from each content line that starts with
+  // whitespace (a tab counts as one character, not four columns); a
+  // tilde fence's opener never matches that pattern, so tilde fences
+  // keep their content lines as-is
+  const dedent = fence.char === '~' ? 0 : fenceIndentChars;
   while (j < hi) {
     const line = lines[j];
     const [ind, idx] = lineIndent(line);
@@ -1725,7 +1957,7 @@ function parseFenced(lines, i, hi, out, fence, fenceIndent) {
     }
     // content lines are dedented by the opening fence's indent
     // (backtick fences only; tilde fences keep content as-is)
-    content.push(dedent ? stripIndentWs(line, dedent) : line);
+    content.push(dedent ? dtDedent(line, dedent) : line);
     j++;
   }
   const lang = unescapeBackslash(fence.info.trim().split(/\s+/)[0] || '');
@@ -1960,7 +2192,9 @@ function parseParagraph(lines, i, hi, out, S, tight, collect, inItem) {
       const isLazy = lines.noInterrupt && lines.noInterrupt.has(j);
       // a lazy setext-like line inside a blockquote is paragraph text,
       // not an underline (marked: a setext underline cannot be lazy)
-      const se = (isLazy || (lines.noSetext && lines.noSetext.has(j))) ? 0 : matchSetext(s);
+      // a table row can never be a setext underline: marked's table
+      // rule swallows later lines as rows until a blank line
+      const se = (isTable || isLazy || (lines.noSetext && lines.noSetext.has(j))) ? 0 : matchSetext(s);
       if (se) {
         setextLevel = se;
         break;
@@ -2020,6 +2254,8 @@ function parseListItem(lines, i, hi, m) {
   const itemLines = [firstContent];
   const st = { inFence: false, char: '', len: 0 };
   trackFence(firstContent, st);
+  // whether any content line has been collected inside the fence yet
+  let fenceContent = false;
   let j = i + 1;
   let loose = false;
   while (j < hi) {
@@ -2062,27 +2298,45 @@ function parseListItem(lines, i, hi, m) {
       }
       while (j < k) {
         itemLines.push('');
-          j++;
+        j++;
       }
       continue;
     }
     const [ind2] = lineIndent(line);
     if (ind2 >= m.contentCol) {
-      const stripped = stripCols(line, m.contentCol);
+      const stripped = stripCols(line, m.contentCol, true);
       itemLines.push(stripped);
+      if (st.inFence) fenceContent = true;
       trackFence(stripped, st);
       j++;
       continue;
     }
-    // inside a fenced code block, lines belong to the fence regardless
-    // of indent (a fence's content is not re-indented to the item:
-    // "function f(a, b) {" at column 0 is still fence content, and a
-    // "- foo" line inside a fence is code, not a list marker)
+    // Inside a fenced code block, a line indented below the item's
+    // content column is fence content — but only once some content has
+    // been collected, and only if it is not the closing fence. A
+    // closing-fence line below the content column ends the item (the
+    // fence stays unclosed inside it, and the line opens a new fence at
+    // the top level), and so does a first content line below the content
+    // column (the fence is empty in marked: doc-13/17/38). This is the
+    // doc-13 mechanism: a fence whose first content line sits at
+    // column 0 is empty, and a fence-looking line after it swallows
+    // the rest of the input — including the link reference definitions
+    // at the end of the document.
     if (st.inFence) {
+      const [, cidx] = lineIndent(line);
+      const cs = line.slice(cidx);
+      let isClose = false;
+      if (cs[0] === st.char) {
+        let len = 0;
+        while (len < cs.length && cs[len] === st.char) len++;
+        if (len >= st.len && isBlank(cs.slice(len))) isClose = true;
+      }
+      if (isClose || !fenceContent) break;
       // strip only leading whitespace (stripCols would eat non-space
       // characters of a column-0 fence content line: "function" -> "nction")
       const stripped = stripIndentWs(line, m.contentCol);
       itemLines.push(stripped);
+      fenceContent = true;
       trackFence(stripped, st);
       j++;
       continue;
@@ -2185,7 +2439,7 @@ function parseBlocks(lines, lo, hi, out, S, tight, collect, inItem) {
     const s = line.slice(idx);
     const fence = matchFence(s);
     if (fence) {
-      i = parseFenced(lines, i, hi, out, fence, ind);
+      i = parseFenced(lines, i, hi, out, fence, idx);
       continue;
     }
     const atx = matchATX(s);
@@ -2225,7 +2479,7 @@ export function parse(markdown) {
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
   lines.term = term;
   lines.isTop = true;
-  const S = { refs: new Map() };
+  const S = { refs: new Map(), inLink: false };
   // Phase 1: collect link reference definitions (a use may precede its
   // definition), without rendering. Phase 2 renders with them available.
   parseBlocks(lines, 0, lines.length, [], S, false, true);
