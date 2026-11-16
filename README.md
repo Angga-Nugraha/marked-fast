@@ -24,7 +24,9 @@ Then score with the kit scorer (`kit/program/scorer/main.ts`) by setting
 
 ## Practice score
 
-700/720 cases byte-identical to marked 18.1.3 on the practice set (all 680
-CommonMark + GFM spec cases pass; 20 generated docs still differ, mostly
-nested-emphasis rule-of-3 cases and context-dependent list/fence/ref edges).
-Work in progress toward 720/720.
+720/720 cases byte-identical to marked 18.1.3 on the practice set (all 680
+CommonMark + GFM spec cases pass, plus all 40 generated docs).
+
+[![make.fun · markdown-render-speed-02](https://make.fun/badge/markdown-render-speed-02.svg)](https://make.fun/bounty/markdown-render-speed-02?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
+[![rank](https://make.fun/badge/markdown-render-speed-02/Angga-Nugraha/marked-fast/rank.svg)](https://make.fun/bounty/markdown-render-speed-02/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
+[![reward](https://make.fun/badge/markdown-render-speed-02/Angga-Nugraha/marked-fast/reward.svg)](https://make.fun/bounty/markdown-render-speed-02?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
