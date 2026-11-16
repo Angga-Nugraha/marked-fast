@@ -1,10 +1,10 @@
-// Driver for the marked-fast markdown renderer.
+// Driver for the marked-fast renderer.
 //
-// Reads cases.json from $MAKEFUN_INPUT_DIR (or /input), renders each
-// case with parse() from ./parse.js, and writes html.json (a JSON array
-// of HTML strings, in input order) to $MAKEFUN_OUTPUT_DIR (or /output).
-//
-// Node 22 erasable TypeScript: builtins only, no dependencies.
+// Takes cases.json from $MAKEFUN_INPUT_DIR (default /input), renders
+// every case with parse() from ./parse.js, and writes the HTML strings
+// (a JSON array, in input order) to $MAKEFUN_OUTPUT_DIR/html.json
+// (default /output). Erasable TypeScript for node 22: builtins only,
+// no third-party dependencies.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from './parse.js';
